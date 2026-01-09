@@ -202,15 +202,29 @@ class ChatApp:
 
     # ------------------- PER-PEER RECEIVE -------------------
     def handle_peer(self, conn, peer_name, peer_ip):
+        print(f"[DEBUG] Started handler for {peer_name} ({peer_ip})")
+
         while True:
             try:
-                msg = conn.recv(1024).decode()
-                if not msg:
+                data = conn.recv(1024)
+                if not data:
+                    print(f"[DEBUG] Empty recv() from {peer_name} — disconnecting")
                     break
+
+                try:
+                    msg = data.decode()
+                except Exception as e:
+                    print(f"[DEBUG] Decode error from {peer_name}: {e}")
+                    break
+
+                print(f"[DEBUG] Received from {peer_name}: {msg}")
                 self.safe_log(msg)
-            except:
+
+            except Exception as e:
+                print(f"[DEBUG] Exception in handler for {peer_name}: {e}")
                 break
 
+        print(f"[DEBUG] Handler exiting for {peer_name}")
         self.remove_peer(conn)
         try:
             conn.close()
