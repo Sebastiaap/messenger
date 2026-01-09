@@ -85,6 +85,7 @@ class ChatApp:
 
     def add_peer(self, conn, peer_name, peer_ip):
         with self.peers_lock:
+            # Avoid duplicates
             for p in self.peers:
                 if p["ip"] == peer_ip:
                     try:
@@ -93,6 +94,7 @@ class ChatApp:
                         pass
                     return
             self.peers.append({"conn": conn, "name": peer_name, "ip": peer_ip})
+
         self.safe_log(f"{peer_name} ({peer_ip}) connected")
 
     def remove_peer(self, conn):
@@ -143,8 +145,8 @@ class ChatApp:
                 if ip == self.ip:
                     continue
 
-                # NUMERIC IP comparison
-                if self.ip_to_tuple(ip) <= self.ip_to_tuple(self.ip):
+                # Only connect to peers with a HIGHER IP than ours
+                if self.ip_to_tuple(self.ip) >= self.ip_to_tuple(ip):
                     continue
 
                 if self.is_connected_to_ip(ip):
