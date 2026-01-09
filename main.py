@@ -2,6 +2,7 @@ import socket
 import threading
 import tkinter as tk
 from tkinter import scrolledtext
+import time
 
 CHAT_PORT = 5009
 CONNECTION_TIMEOUT = 1.5
@@ -29,15 +30,15 @@ class ChatApp:
         self.ip = self.get_local_ip()
         self.name = CONTACTS.get(self.ip, self.ip)
 
-        self.sock = None         # Client socket if connected
-        self.server = None       # Host server if hosting
-        self.peers = []          # [(conn, name), ...]
+        self.sock = None
+        self.server = None
+        self.peers = []  # [(conn, name)]
         self.is_host = False
         self.host_name = None
 
         self.safe_log(f"You are {self.name} ({self.ip})")
 
-        # Try to join any known host; if none found, start hosting
+        # Try to connect to any host first
         if not self.try_join():
             self.start_host()
 
@@ -69,7 +70,7 @@ class ChatApp:
 
     # ------------------- CLIENT -------------------
     def try_join(self):
-        for ip, host_name in CONTACTS.items():
+        for ip, peer_name in CONTACTS.items():
             if ip == self.ip:
                 continue
             try:
@@ -78,9 +79,7 @@ class ChatApp:
                 sock.connect((ip, CHAT_PORT))
 
                 self.sock = sock
-                # Send our name
                 self.sock.sendall(self.name.encode())
-                # Receive host name
                 self.host_name = self.sock.recv(1024).decode()
                 self.update_title()
 
@@ -122,26 +121,15 @@ class ChatApp:
                 conn.close()
                 continue
 
-            # Receive client name
             try:
                 client_name = conn.recv(1024).decode()
-            except:
-                conn.close()
-                continue
-
-            # Send host name back
-            try:
                 conn.sendall(self.name.encode())
             except:
                 conn.close()
                 continue
 
-            # Add to peer list
             self.peers.append((conn, client_name))
-            # Broadcast join message to all clients (including previous clients)
             self.broadcast(f"{client_name} joined the chat")
-
-            # Start listening to this client
             threading.Thread(target=self.handle_peer, args=(conn, client_name), daemon=True).start()
 
     def handle_peer(self, conn, client_name):
@@ -150,11 +138,9 @@ class ChatApp:
                 msg = conn.recv(1024).decode()
                 if not msg:
                     break
-                # Broadcast to all clients including sender
                 self.broadcast(f"{client_name}: {msg}")
             except:
                 break
-        # Remove peer on disconnect
         self.peers = [p for p in self.peers if p[0] != conn]
         self.broadcast(f"{client_name} left the chat")
         conn.close()
