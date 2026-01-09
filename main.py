@@ -2,12 +2,10 @@ import socket
 import threading
 import tkinter as tk
 from tkinter import scrolledtext
-import time
 
 CHAT_PORT = 5009
 CONNECTION_TIMEOUT = 1.5
 
-# IP → Name mapping
 CONTACTS = {
     "192.168.212.4": "Sebastiaan",
     "192.168.213.177": "Thomas",
@@ -32,13 +30,13 @@ class ChatApp:
 
         self.sock = None
         self.server = None
-        self.peers = []  # [(conn, name)]
+        self.peers = []
         self.is_host = False
         self.host_name = None
 
         self.safe_log(f"You are {self.name} ({self.ip})")
 
-        # Try to connect to any host first
+        # Try to join existing host
         if not self.try_join():
             self.start_host()
 
@@ -141,6 +139,7 @@ class ChatApp:
                 self.broadcast(f"{client_name}: {msg}")
             except:
                 break
+
         self.peers = [p for p in self.peers if p[0] != conn]
         self.broadcast(f"{client_name} left the chat")
         conn.close()
