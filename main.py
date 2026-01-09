@@ -66,7 +66,7 @@ class ChatApp:
             s.close()
 
     def timestamp(self):
-        now = datetime.now()  # Local CET/CEST time
+        now = datetime.now()  # Local CET/CEST time (based on system settings)
         return now.strftime("[%H:%M:%S]")
 
     def log(self, msg):
@@ -138,12 +138,16 @@ class ChatApp:
                 conn, addr = self.server.accept()
                 peer_ip = addr[0]
 
+                # Handshake (JSON, newline-terminated)
                 peer_info = self.recv_json(conn)
                 if not peer_info:
                     conn.close()
                     continue
 
                 self.send_json(conn, {"name": self.name, "ip": self.ip, "version": 1})
+
+                # Remove timeout for long-lived chat usage
+                conn.settimeout(None)
 
                 peer_name = peer_info["name"]
 
@@ -176,11 +180,15 @@ class ChatApp:
                     sock.settimeout(CONNECTION_TIMEOUT)
                     sock.connect((ip, CHAT_PORT))
 
+                    # Handshake (JSON, newline-terminated)
                     self.send_json(sock, {"name": self.name, "ip": self.ip, "version": 1})
                     peer_info = self.recv_json(sock)
                     if not peer_info:
                         sock.close()
                         continue
+
+                    # Remove timeout after successful handshake
+                    sock.settimeout(None)
 
                     peer_name = peer_info["name"]
 
@@ -202,29 +210,15 @@ class ChatApp:
 
     # ------------------- PER-PEER RECEIVE -------------------
     def handle_peer(self, conn, peer_name, peer_ip):
-        print(f"[DEBUG] Started handler for {peer_name} ({peer_ip})")
-
         while True:
             try:
-                data = conn.recv(1024)
-                if not data:
-                    print(f"[DEBUG] Empty recv() from {peer_name} — disconnecting")
+                msg = conn.recv(1024).decode()
+                if not msg:
                     break
-
-                try:
-                    msg = data.decode()
-                except Exception as e:
-                    print(f"[DEBUG] Decode error from {peer_name}: {e}")
-                    break
-
-                print(f"[DEBUG] Received from {peer_name}: {msg}")
                 self.safe_log(msg)
-
-            except Exception as e:
-                print(f"[DEBUG] Exception in handler for {peer_name}: {e}")
+            except:
                 break
 
-        print(f"[DEBUG] Handler exiting for {peer_name}")
         self.remove_peer(conn)
         try:
             conn.close()
