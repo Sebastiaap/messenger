@@ -3,12 +3,14 @@ import threading
 import tkinter as tk
 from tkinter import scrolledtext
 import time
+import json
+from datetime import datetime
 
 CHAT_PORT = 5009
 CONNECTION_TIMEOUT = 1.5
 RECONNECT_INTERVAL = 3  # seconds
 
-# Your updated CONTACTS list
+# Your CONTACTS list
 CONTACTS = {
     "192.168.212.4": "Sebastiaan",
     "192.168.213.177": "Thomas",
@@ -63,6 +65,10 @@ class ChatApp:
         finally:
             s.close()
 
+    def timestamp(self):
+        now = datetime.now()  # Local CET/CEST time
+        return now.strftime("[%H:%M:%S]")
+
     def log(self, msg):
         self.chat.config(state="normal")
         self.chat.insert(tk.END, msg + "\n")
@@ -75,6 +81,21 @@ class ChatApp:
     def update_title(self):
         self.root.title(f"P2P Mesh Chat — You: {self.name}")
 
+    # ------------------- JSON SEND/RECEIVE -------------------
+    def send_json(self, conn, obj):
+        data = json.dumps(obj) + "\n"
+        conn.sendall(data.encode())
+
+    def recv_json(self, conn):
+        buffer = ""
+        while "\n" not in buffer:
+            chunk = conn.recv(1024).decode()
+            if not chunk:
+                return None
+            buffer += chunk
+        line, _ = buffer.split("\n", 1)
+        return json.loads(line)
+
     # ------------------- PEER MANAGEMENT -------------------
     def is_connected_to_ip(self, ip):
         with self.peers_lock:
@@ -85,7 +106,6 @@ class ChatApp:
 
     def add_peer(self, conn, peer_name, peer_ip):
         with self.peers_lock:
-            # Avoid duplicates
             for p in self.peers:
                 if p["ip"] == peer_ip:
                     try:
@@ -95,7 +115,7 @@ class ChatApp:
                     return
             self.peers.append({"conn": conn, "name": peer_name, "ip": peer_ip})
 
-        self.safe_log(f"{peer_name} ({peer_ip}) connected")
+        self.safe_log(f"{self.timestamp()} {peer_name} ({peer_ip}) connected")
 
     def remove_peer(self, conn):
         removed_peer = None
@@ -109,7 +129,7 @@ class ChatApp:
             self.peers = new_peers
 
         if removed_peer:
-            self.safe_log(f"{removed_peer['name']} ({removed_peer['ip']}) disconnected")
+            self.safe_log(f"{self.timestamp()} {removed_peer['name']} ({removed_peer['ip']}) disconnected")
 
     # ------------------- SERVER SIDE -------------------
     def accept_peers(self):
@@ -118,15 +138,14 @@ class ChatApp:
                 conn, addr = self.server.accept()
                 peer_ip = addr[0]
 
-                try:
-                    peer_name = conn.recv(1024).decode()
-                    if not peer_name:
-                        conn.close()
-                        continue
-                    conn.sendall(self.name.encode())
-                except:
+                peer_info = self.recv_json(conn)
+                if not peer_info:
                     conn.close()
                     continue
+
+                self.send_json(conn, {"name": self.name, "ip": self.ip, "version": 1})
+
+                peer_name = peer_info["name"]
 
                 self.add_peer(conn, peer_name, peer_ip)
 
@@ -157,11 +176,13 @@ class ChatApp:
                     sock.settimeout(CONNECTION_TIMEOUT)
                     sock.connect((ip, CHAT_PORT))
 
-                    sock.sendall(self.name.encode())
-                    peer_name = sock.recv(1024).decode()
-                    if not peer_name:
+                    self.send_json(sock, {"name": self.name, "ip": self.ip, "version": 1})
+                    peer_info = self.recv_json(sock)
+                    if not peer_info:
                         sock.close()
                         continue
+
+                    peer_name = peer_info["name"]
 
                     self.add_peer(sock, peer_name, ip)
 
@@ -203,7 +224,7 @@ class ChatApp:
             return
         self.entry.delete(0, tk.END)
 
-        formatted = f"{self.name}: {msg}"
+        formatted = f"{self.timestamp()} {self.name}: {msg}"
 
         self.safe_log(formatted)
 
