@@ -4,7 +4,7 @@ import tkinter as tk
 from tkinter import scrolledtext, messagebox
 
 CHAT_PORT = 5009
-TIMEOUT = 1.5
+TIMEOUT = 2.0
 
 # 🧾 CONTACT LIST: IP → NAME
 CONTACTS = {
@@ -17,6 +17,8 @@ CONTACTS = {
 class ChatApp:
     def __init__(self, root):
         self.root = root
+        self.root.title("P2P Chat")
+
         self.chat = scrolledtext.ScrolledText(root, state="disabled", width=60, height=20)
         self.chat.pack(padx=10, pady=10)
 
@@ -29,9 +31,9 @@ class ChatApp:
         self.ip = self.get_local_ip()
         self.name = CONTACTS.get(self.ip, self.ip)
 
-        self.is_host = False
         self.sock = None
         self.peers = []
+        self.is_host = False
 
         self.safe_log(f"You are {self.name} ({self.ip})")
 
@@ -60,18 +62,20 @@ class ChatApp:
 
     # ---------- JOIN ----------
     def try_join(self):
-        for ip in CONTACTS:
+        for ip, host_name in CONTACTS.items():
             if ip == self.ip:
                 continue
             try:
                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 sock.settimeout(TIMEOUT)
                 sock.connect((ip, CHAT_PORT))
+
+                # send our name
                 sock.sendall(self.name.encode())
 
                 self.sock = sock
+                self.root.title(f"P2P Chat — Host: {host_name}")
                 threading.Thread(target=self.receive_messages, daemon=True).start()
-                self.root.title(f"P2P Chat — Host: {CONTACTS[ip]}")
                 return True
             except:
                 continue
@@ -81,42 +85,42 @@ class ChatApp:
     def start_host(self):
         self.is_host = True
         self.root.title(f"P2P Chat — Host: You ({self.name})")
+        self.safe_log("Hosting chat")
 
         server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         server.bind(("0.0.0.0", CHAT_PORT))
         server.listen()
 
         threading.Thread(target=self.accept_peers, args=(server,), daemon=True).start()
-        self.safe_log("Hosting chat")
 
     def accept_peers(self, server):
         while True:
             conn, addr = server.accept()
-            name = conn.recv(1024).decode()
-            self.peers.append(conn)
+            peer_name = conn.recv(1024).decode()
+            self.peers.append((conn, peer_name))
 
-            self.broadcast(f"{name} joined the chat")
-            threading.Thread(target=self.handle_peer, args=(conn, name), daemon=True).start()
+            self.broadcast(f"{peer_name} joined the chat")
+            threading.Thread(target=self.handle_peer, args=(conn, peer_name), daemon=True).start()
 
-    def handle_peer(self, conn, name):
+    def handle_peer(self, conn, peer_name):
         while True:
             try:
                 msg = conn.recv(1024).decode()
                 if not msg:
                     break
-                self.broadcast(f"{name}: {msg}")
+                self.broadcast(f"{peer_name}: {msg}")
             except:
                 break
 
-        self.peers.remove(conn)
-        self.broadcast(f"{name} left the chat")
+        self.peers = [p for p in self.peers if p[0] != conn]
+        self.broadcast(f"{peer_name} left the chat")
         conn.close()
 
     def broadcast(self, msg):
         self.safe_log(msg)
-        for peer in self.peers:
+        for conn, _ in self.peers:
             try:
-                peer.sendall(msg.encode())
+                conn.sendall(msg.encode())
             except:
                 pass
 
