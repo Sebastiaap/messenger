@@ -2,16 +2,19 @@ import socket
 import threading
 import tkinter as tk
 from tkinter import scrolledtext
+import time
 
 CHAT_PORT = 5009
 CONNECTION_TIMEOUT = 1.5
+RECONNECT_INTERVAL = 3  # seconds
 
-# IP → Name mapping (optional, only for display)
+# Your updated CONTACTS list
 CONTACTS = {
     "192.168.212.4": "Sebastiaan",
     "192.168.213.177": "Thomas",
     "192.168.212.140": "Tom",
-    "192.168.213.131": "Jasper"
+    "192.168.213.131": "Jasper",
+    "192.168.213.13": "Tijmen"
 }
 
 class ChatApp:
@@ -21,7 +24,7 @@ class ChatApp:
         self.chat.pack(padx=10, pady=10)
 
         self.entry = tk.Entry(root, width=50)
-        self.entry.pack(side=tk.LEFT, padx=(10,0), pady=10)
+        self.entry.pack(side=tk.LEFT, padx=(10, 0), pady=10)
         self.entry.bind("<Return>", self.send_message)
 
         tk.Button(root, text="Send", command=self.send_message).pack(side=tk.LEFT, padx=10)
@@ -29,19 +32,27 @@ class ChatApp:
         self.ip = self.get_local_ip()
         self.name = CONTACTS.get(self.ip, self.ip)
 
-        self.sock = None
-        self.server = None
+        # Peers: list of dicts: {"conn": socket, "name": str, "ip": str}
         self.peers = []
-        self.is_host = False
-        self.host_name = None
+        self.peers_lock = threading.Lock()
 
         self.safe_log(f"You are {self.name} ({self.ip})")
 
-        # Try to join an existing host
-        if not self.try_join():
-            self.start_host()
+        self.update_title()
+
+        # Start server (everyone hosts)
+        self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.server.bind(("0.0.0.0", CHAT_PORT))
+        self.server.listen()
+
+        threading.Thread(target=self.accept_peers, daemon=True).start()
+        threading.Thread(target=self.connect_to_peers_loop, daemon=True).start()
 
     # ------------------- UTIL -------------------
+    def ip_to_tuple(self, ip):
+        return tuple(int(part) for part in ip.split("."))
+
     def get_local_ip(self):
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
@@ -62,97 +73,126 @@ class ChatApp:
         self.root.after(0, self.log, msg)
 
     def update_title(self):
-        if self.is_host:
-            self.root.title(f"P2P Chat — Host: You ({self.name})")
-        else:
-            self.root.title(f"P2P Chat — Host: {self.host_name}")
+        self.root.title(f"P2P Mesh Chat — You: {self.name}")
 
-    # ------------------- CLIENT -------------------
-    def try_join(self):
-        for ip, peer_name in CONTACTS.items():
-            if ip == self.ip:
-                continue
-            try:
-                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock.settimeout(CONNECTION_TIMEOUT)
-                sock.connect((ip, CHAT_PORT))
-
-                self.sock = sock
-                self.sock.sendall(self.name.encode())
-                self.host_name = self.sock.recv(1024).decode()
-                self.update_title()
-
-                threading.Thread(target=self.receive_messages, daemon=True).start()
-                self.safe_log(f"Connected to host {self.host_name}")
-                return True
-            except:
-                continue
+    # ------------------- PEER MANAGEMENT -------------------
+    def is_connected_to_ip(self, ip):
+        with self.peers_lock:
+            for p in self.peers:
+                if p["ip"] == ip:
+                    return True
         return False
 
-    def receive_messages(self):
+    def add_peer(self, conn, peer_name, peer_ip):
+        with self.peers_lock:
+            for p in self.peers:
+                if p["ip"] == peer_ip:
+                    try:
+                        conn.close()
+                    except:
+                        pass
+                    return
+            self.peers.append({"conn": conn, "name": peer_name, "ip": peer_ip})
+        self.safe_log(f"{peer_name} ({peer_ip}) connected")
+
+    def remove_peer(self, conn):
+        removed_peer = None
+        with self.peers_lock:
+            new_peers = []
+            for p in self.peers:
+                if p["conn"] is conn:
+                    removed_peer = p
+                else:
+                    new_peers.append(p)
+            self.peers = new_peers
+
+        if removed_peer:
+            self.safe_log(f"{removed_peer['name']} ({removed_peer['ip']}) disconnected")
+
+    # ------------------- SERVER SIDE -------------------
+    def accept_peers(self):
         while True:
             try:
-                msg = self.sock.recv(1024).decode()
+                conn, addr = self.server.accept()
+                peer_ip = addr[0]
+
+                try:
+                    peer_name = conn.recv(1024).decode()
+                    if not peer_name:
+                        conn.close()
+                        continue
+                    conn.sendall(self.name.encode())
+                except:
+                    conn.close()
+                    continue
+
+                self.add_peer(conn, peer_name, peer_ip)
+
+                threading.Thread(
+                    target=self.handle_peer,
+                    args=(conn, peer_name, peer_ip),
+                    daemon=True
+                ).start()
+            except:
+                break
+
+    # ------------------- CLIENT SIDE (OUTGOING CONNECTIONS) -------------------
+    def connect_to_peers_loop(self):
+        while True:
+            for ip, display_name in CONTACTS.items():
+                if ip == self.ip:
+                    continue
+
+                # NUMERIC IP comparison
+                if self.ip_to_tuple(ip) <= self.ip_to_tuple(self.ip):
+                    continue
+
+                if self.is_connected_to_ip(ip):
+                    continue
+
+                try:
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    sock.settimeout(CONNECTION_TIMEOUT)
+                    sock.connect((ip, CHAT_PORT))
+
+                    sock.sendall(self.name.encode())
+                    peer_name = sock.recv(1024).decode()
+                    if not peer_name:
+                        sock.close()
+                        continue
+
+                    self.add_peer(sock, peer_name, ip)
+
+                    threading.Thread(
+                        target=self.handle_peer,
+                        args=(sock, peer_name, ip),
+                        daemon=True
+                    ).start()
+                except:
+                    try:
+                        sock.close()
+                    except:
+                        pass
+                    continue
+
+            time.sleep(RECONNECT_INTERVAL)
+
+    # ------------------- PER-PEER RECEIVE -------------------
+    def handle_peer(self, conn, peer_name, peer_ip):
+        while True:
+            try:
+                msg = conn.recv(1024).decode()
                 if not msg:
                     break
                 self.safe_log(msg)
             except:
                 break
 
-    # ------------------- HOST -------------------
-    def start_host(self):
-        self.is_host = True
-        self.host_name = self.name
-        self.update_title()
-        self.safe_log("No host found — hosting chat")
-
-        self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.server.bind(("0.0.0.0", CHAT_PORT))
-        self.server.listen()
-        threading.Thread(target=self.accept_peers, daemon=True).start()
-
-    def accept_peers(self):
-        while True:
-            conn, addr = self.server.accept()
-
-            try:
-                client_name = conn.recv(1024).decode()
-                conn.sendall(self.name.encode())
-            except:
-                conn.close()
-                continue
-
-            self.peers.append((conn, client_name))
-
-            # Send welcome message to the new client
-            conn.sendall(f"Welcome {client_name}! Connected to host {self.name}.\n".encode())
-
-            self.broadcast(f"{client_name} joined the chat")
-
-            threading.Thread(target=self.handle_peer, args=(conn, client_name), daemon=True).start()
-
-    def handle_peer(self, conn, client_name):
-        while True:
-            try:
-                msg = conn.recv(1024).decode()
-                if not msg:
-                    break
-                self.broadcast(f"{client_name}: {msg}")
-            except:
-                break
-
-        self.peers = [p for p in self.peers if p[0] != conn]
-        self.broadcast(f"{client_name} left the chat")
-        conn.close()
-
-    # ------------------- BROADCAST -------------------
-    def broadcast(self, msg):
-        self.safe_log(msg)
-        for conn, _ in self.peers:
-            try:
-                conn.sendall(msg.encode())
-            except:
-                pass
+        self.remove_peer(conn)
+        try:
+            conn.close()
+        except:
+            pass
 
     # ------------------- SEND MESSAGE -------------------
     def send_message(self, event=None):
@@ -161,13 +201,25 @@ class ChatApp:
             return
         self.entry.delete(0, tk.END)
 
-        if self.is_host:
-            self.broadcast(f"{self.name}: {msg}")
-        else:
+        formatted = f"{self.name}: {msg}"
+
+        self.safe_log(formatted)
+
+        with self.peers_lock:
+            dead_conns = []
+            for p in self.peers:
+                conn = p["conn"]
+                try:
+                    conn.sendall(formatted.encode())
+                except:
+                    dead_conns.append(conn)
+
+        for conn in dead_conns:
+            self.remove_peer(conn)
             try:
-                self.sock.sendall(msg.encode())
+                conn.close()
             except:
-                self.safe_log("Failed to send message")
+                pass
 
 # ------------------- RUN -------------------
 if __name__ == "__main__":
