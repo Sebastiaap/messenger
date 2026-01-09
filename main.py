@@ -4,7 +4,7 @@ import tkinter as tk
 from tkinter import scrolledtext, messagebox
 
 CHAT_PORT = 5009
-TIMEOUT = 1.5
+CONNECTION_TIMEOUT = 1.5
 
 # 🧾 CONTACT LIST: IP → NAME
 CONTACTS = {
@@ -31,17 +31,16 @@ class ChatApp:
 
         self.sock = None
         self.server = None
-        self.peers = []  # [(conn, name), ...]
         self.is_host = False
+        self.peers = []  # [(conn, name)]
         self.host_name = None
 
         self.safe_log(f"You are {self.name} ({self.ip})")
 
-        # Try to join peers; if none found, become host
         if not self.try_join():
             self.start_host()
 
-    # ------------------- UTIL -------------------
+    # ---------------- UTILS ----------------
     def get_local_ip(self):
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
@@ -67,20 +66,19 @@ class ChatApp:
         else:
             self.root.title(f"P2P Chat — Host: {self.host_name}")
 
-    # ------------------- CLIENT -------------------
+    # ---------------- CLIENT ----------------
     def try_join(self):
-        for ip, peer_name in CONTACTS.items():
+        for ip, host_name in CONTACTS.items():
             if ip == self.ip:
                 continue
             try:
                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock.settimeout(TIMEOUT)
+                sock.settimeout(CONNECTION_TIMEOUT)
                 sock.connect((ip, CHAT_PORT))
 
                 self.sock = sock
                 self.sock.sendall(self.name.encode())
 
-                # receive host name
                 self.host_name = self.sock.recv(1024).decode()
                 self.update_title()
 
@@ -101,7 +99,7 @@ class ChatApp:
             except:
                 break
 
-    # ------------------- HOST -------------------
+    # ---------------- HOST ----------------
     def start_host(self):
         self.is_host = True
         self.host_name = self.name
@@ -111,7 +109,6 @@ class ChatApp:
         self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server.bind(("0.0.0.0", CHAT_PORT))
         self.server.listen()
-
         threading.Thread(target=self.accept_peers, daemon=True).start()
 
     def accept_peers(self):
@@ -139,26 +136,25 @@ class ChatApp:
                 msg = conn.recv(1024).decode()
                 if not msg:
                     break
-                self.broadcast(f"{client_name}: {msg}")  # broadcast to all, including sender
+                self.broadcast(f"{client_name}: {msg}")
             except:
                 break
         self.peers = [p for p in self.peers if p[0] != conn]
         self.broadcast(f"{client_name} left the chat")
         conn.close()
 
-    # ------------------- BROADCAST -------------------
+    # ---------------- BROADCAST ----------------
     def broadcast(self, msg):
-        # Log locally for host
+        # Host logs messages locally
         self.safe_log(msg)
-        # Send to all connected clients
+        # Send to all clients
         for conn, _ in self.peers:
             try:
                 conn.sendall(msg.encode())
             except:
                 pass
-        # If host is also client (unlikely, but safe), we could ignore here
 
-    # ------------------- SEND MESSAGE -------------------
+    # ---------------- SEND MESSAGE ----------------
     def send_message(self, event=None):
         msg = self.entry.get().strip()
         if not msg:
@@ -166,7 +162,6 @@ class ChatApp:
         self.entry.delete(0, tk.END)
 
         if self.is_host:
-            # Host broadcasts locally and to all clients
             self.broadcast(f"{self.name}: {msg}")
         else:
             try:
@@ -174,7 +169,7 @@ class ChatApp:
             except:
                 self.safe_log("Failed to send message")
 
-# ------------------- RUN -------------------
+# ---------------- RUN ----------------
 if __name__ == "__main__":
     root = tk.Tk()
     ChatApp(root)
