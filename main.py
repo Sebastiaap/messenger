@@ -6,6 +6,7 @@ from tkinter import scrolledtext
 CHAT_PORT = 5009
 CONNECTION_TIMEOUT = 1.5
 
+# IP → Name mapping (optional, only for display)
 CONTACTS = {
     "192.168.212.4": "Sebastiaan",
     "192.168.213.177": "Thomas",
@@ -36,7 +37,7 @@ class ChatApp:
 
         self.safe_log(f"You are {self.name} ({self.ip})")
 
-        # Try to join existing host
+        # Try to join an existing host
         if not self.try_join():
             self.start_host()
 
@@ -113,11 +114,6 @@ class ChatApp:
     def accept_peers(self):
         while True:
             conn, addr = self.server.accept()
-            ip = addr[0]
-
-            if ip not in CONTACTS:
-                conn.close()
-                continue
 
             try:
                 client_name = conn.recv(1024).decode()
@@ -127,7 +123,12 @@ class ChatApp:
                 continue
 
             self.peers.append((conn, client_name))
+
+            # Send welcome message to the new client
+            conn.sendall(f"Welcome {client_name}! Connected to host {self.name}.\n".encode())
+
             self.broadcast(f"{client_name} joined the chat")
+
             threading.Thread(target=self.handle_peer, args=(conn, client_name), daemon=True).start()
 
     def handle_peer(self, conn, client_name):
