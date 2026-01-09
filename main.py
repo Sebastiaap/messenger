@@ -21,7 +21,7 @@ class ChatApp:
         self.chat.pack(padx=10, pady=10)
 
         self.entry = tk.Entry(root, width=50)
-        self.entry.pack(side=tk.LEFT, padx=(10, 0), pady=10)
+        self.entry.pack(side=tk.LEFT, padx=(10,0), pady=10)
         self.entry.bind("<Return>", self.send_message)
 
         tk.Button(root, text="Send", command=self.send_message).pack(side=tk.LEFT, padx=10)
@@ -31,16 +31,17 @@ class ChatApp:
 
         self.sock = None
         self.server = None
+        self.peers = []  # [(conn, name), ...]
         self.is_host = False
-        self.peers = []
         self.host_name = None
 
         self.safe_log(f"You are {self.name} ({self.ip})")
 
+        # Try to join peers; if none found, become host
         if not self.try_join():
             self.start_host()
 
-    # ------------------ UTILS ------------------
+    # ------------------- UTIL -------------------
     def get_local_ip(self):
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
@@ -66,14 +67,14 @@ class ChatApp:
         else:
             self.root.title(f"P2P Chat — Host: {self.host_name}")
 
-    # ------------------ CLIENT ------------------
+    # ------------------- CLIENT -------------------
     def try_join(self):
-        for ip, name in CONTACTS.items():
+        for ip, peer_name in CONTACTS.items():
             if ip == self.ip:
                 continue
             try:
                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock.settimeout(CONNECTION_TIMEOUT)
+                sock.settimeout(TIMEOUT)
                 sock.connect((ip, CHAT_PORT))
 
                 self.sock = sock
@@ -100,7 +101,7 @@ class ChatApp:
             except:
                 break
 
-    # ------------------ HOST ------------------
+    # ------------------- HOST -------------------
     def start_host(self):
         self.is_host = True
         self.host_name = self.name
@@ -110,6 +111,7 @@ class ChatApp:
         self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server.bind(("0.0.0.0", CHAT_PORT))
         self.server.listen()
+
         threading.Thread(target=self.accept_peers, daemon=True).start()
 
     def accept_peers(self):
@@ -123,7 +125,7 @@ class ChatApp:
 
             # Receive client name
             client_name = conn.recv(1024).decode()
-            # Send host name back
+            # Send host name
             conn.sendall(self.name.encode())
 
             self.peers.append((conn, client_name))
@@ -137,22 +139,26 @@ class ChatApp:
                 msg = conn.recv(1024).decode()
                 if not msg:
                     break
-                self.broadcast(f"{client_name}: {msg}")
+                self.broadcast(f"{client_name}: {msg}")  # broadcast to all, including sender
             except:
                 break
         self.peers = [p for p in self.peers if p[0] != conn]
         self.broadcast(f"{client_name} left the chat")
         conn.close()
 
+    # ------------------- BROADCAST -------------------
     def broadcast(self, msg):
+        # Log locally for host
         self.safe_log(msg)
+        # Send to all connected clients
         for conn, _ in self.peers:
             try:
                 conn.sendall(msg.encode())
             except:
                 pass
+        # If host is also client (unlikely, but safe), we could ignore here
 
-    # ------------------ SEND ------------------
+    # ------------------- SEND MESSAGE -------------------
     def send_message(self, event=None):
         msg = self.entry.get().strip()
         if not msg:
@@ -160,6 +166,7 @@ class ChatApp:
         self.entry.delete(0, tk.END)
 
         if self.is_host:
+            # Host broadcasts locally and to all clients
             self.broadcast(f"{self.name}: {msg}")
         else:
             try:
@@ -167,7 +174,7 @@ class ChatApp:
             except:
                 self.safe_log("Failed to send message")
 
-# ------------------ RUN ------------------
+# ------------------- RUN -------------------
 if __name__ == "__main__":
     root = tk.Tk()
     ChatApp(root)
