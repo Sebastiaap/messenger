@@ -2,13 +2,11 @@ import socket
 import threading
 import tkinter as tk
 from tkinter import scrolledtext
-import uuid
-import time
 
 CHAT_PORT = 5009
-BUFFER_SIZE = 1024
+CONNECTION_TIMEOUT = 1.5
 
-# 🧾 CONTACT LIST: IP → NAME
+# IP → Name mapping
 CONTACTS = {
     "192.168.212.4": "Sebastiaan",
     "192.168.213.177": "Thomas",
@@ -16,7 +14,7 @@ CONTACTS = {
     "192.168.213.131": "Jasper"
 }
 
-class Peer:
+class ChatApp:
     def __init__(self, root):
         self.root = root
         self.chat = scrolledtext.ScrolledText(root, state="disabled", width=60, height=20)
@@ -30,17 +28,20 @@ class Peer:
 
         self.ip = self.get_local_ip()
         self.name = CONTACTS.get(self.ip, self.ip)
-        self.connections = []  # list of (socket, peer_name)
-        self.message_history = set()  # store message IDs to avoid duplicates
+
+        self.sock = None         # Client socket if connected
+        self.server = None       # Host server if hosting
+        self.peers = []          # [(conn, name), ...]
+        self.is_host = False
+        self.host_name = None
 
         self.safe_log(f"You are {self.name} ({self.ip})")
 
-        # Start listening thread
-        threading.Thread(target=self.listen, daemon=True).start()
-        # Connect to known peers
-        threading.Thread(target=self.connect_to_peers, daemon=True).start()
+        # Try to join any known host; if none found, start hosting
+        if not self.try_join():
+            self.start_host()
 
-    # ---------------- UTIL ----------------
+    # ------------------- UTIL -------------------
     def get_local_ip(self):
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
@@ -51,97 +52,139 @@ class Peer:
         finally:
             s.close()
 
-    def safe_log(self, msg):
-        self.root.after(0, self.log, msg)
-
     def log(self, msg):
         self.chat.config(state="normal")
         self.chat.insert(tk.END, msg + "\n")
         self.chat.yview(tk.END)
         self.chat.config(state="disabled")
 
-    # ---------------- LISTEN AS HOST ----------------
-    def listen(self):
-        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        server.bind(("0.0.0.0", CHAT_PORT))
-        server.listen()
-        while True:
-            conn, addr = server.accept()
-            threading.Thread(target=self.handle_connection, args=(conn,), daemon=True).start()
+    def safe_log(self, msg):
+        self.root.after(0, self.log, msg)
 
-    def handle_connection(self, conn):
-        try:
-            peer_name = conn.recv(BUFFER_SIZE).decode()
-            if not peer_name:
-                conn.close()
-                return
-            # Add to connections if not already
-            if (conn, peer_name) not in self.connections:
-                self.connections.append((conn, peer_name))
-            # Send our name to the peer
-            conn.sendall(self.name.encode())
+    def update_title(self):
+        if self.is_host:
+            self.root.title(f"P2P Chat — Host: You ({self.name})")
+        else:
+            self.root.title(f"P2P Chat — Host: {self.host_name}")
 
-            while True:
-                data = conn.recv(BUFFER_SIZE)
-                if not data:
-                    break
-                self.process_message(data.decode(), conn)
-        except:
-            pass
-        # remove connection when done
-        self.connections = [c for c in self.connections if c[0] != conn]
-        conn.close()
-
-    # ---------------- CONNECT TO PEERS ----------------
-    def connect_to_peers(self):
-        time.sleep(1)  # short delay to let server start
-        for ip, peer_name in CONTACTS.items():
+    # ------------------- CLIENT -------------------
+    def try_join(self):
+        for ip, host_name in CONTACTS.items():
             if ip == self.ip:
                 continue
             try:
                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock.settimeout(2)
+                sock.settimeout(CONNECTION_TIMEOUT)
                 sock.connect((ip, CHAT_PORT))
-                sock.sendall(self.name.encode())
-                remote_name = sock.recv(BUFFER_SIZE).decode()
-                self.connections.append((sock, remote_name))
-                threading.Thread(target=self.handle_connection, args=(sock,), daemon=True).start()
-                self.safe_log(f"Connected to {remote_name}")
+
+                self.sock = sock
+                # Send our name
+                self.sock.sendall(self.name.encode())
+                # Receive host name
+                self.host_name = self.sock.recv(1024).decode()
+                self.update_title()
+
+                threading.Thread(target=self.receive_messages, daemon=True).start()
+                self.safe_log(f"Connected to host {self.host_name}")
+                return True
             except:
                 continue
+        return False
 
-    # ---------------- SEND MESSAGE ----------------
-    def send_message(self, event=None):
-        msg_text = self.entry.get().strip()
-        if not msg_text:
-            return
-        self.entry.delete(0, tk.END)
-        message_id = str(uuid.uuid4())
-        msg = f"{message_id}|{self.name}: {msg_text}"
-        self.process_message(msg, None)  # display locally
-        self.broadcast(msg, exclude=None)
+    def receive_messages(self):
+        while True:
+            try:
+                msg = self.sock.recv(1024).decode()
+                if not msg:
+                    break
+                self.safe_log(msg)
+            except:
+                break
 
-    # ---------------- PROCESS MESSAGE ----------------
-    def process_message(self, msg, sender_conn):
-        msg_id, text = msg.split("|", 1)
-        if msg_id in self.message_history:
-            return  # already processed
-        self.message_history.add(msg_id)
-        self.safe_log(text)
-        self.broadcast(msg, exclude=sender_conn)
+    # ------------------- HOST -------------------
+    def start_host(self):
+        self.is_host = True
+        self.host_name = self.name
+        self.update_title()
+        self.safe_log("No host found — hosting chat")
 
-    # ---------------- BROADCAST ----------------
-    def broadcast(self, msg, exclude):
-        for conn, _ in self.connections:
-            if conn == exclude:
+        self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.server.bind(("0.0.0.0", CHAT_PORT))
+        self.server.listen()
+        threading.Thread(target=self.accept_peers, daemon=True).start()
+
+    def accept_peers(self):
+        while True:
+            conn, addr = self.server.accept()
+            ip = addr[0]
+
+            if ip not in CONTACTS:
+                conn.close()
                 continue
+
+            # Receive client name
+            try:
+                client_name = conn.recv(1024).decode()
+            except:
+                conn.close()
+                continue
+
+            # Send host name back
+            try:
+                conn.sendall(self.name.encode())
+            except:
+                conn.close()
+                continue
+
+            # Add to peer list
+            self.peers.append((conn, client_name))
+            # Broadcast join message to all clients (including previous clients)
+            self.broadcast(f"{client_name} joined the chat")
+
+            # Start listening to this client
+            threading.Thread(target=self.handle_peer, args=(conn, client_name), daemon=True).start()
+
+    def handle_peer(self, conn, client_name):
+        while True:
+            try:
+                msg = conn.recv(1024).decode()
+                if not msg:
+                    break
+                # Broadcast to all clients including sender
+                self.broadcast(f"{client_name}: {msg}")
+            except:
+                break
+        # Remove peer on disconnect
+        self.peers = [p for p in self.peers if p[0] != conn]
+        self.broadcast(f"{client_name} left the chat")
+        conn.close()
+
+    # ------------------- BROADCAST -------------------
+    def broadcast(self, msg):
+        self.safe_log(msg)
+        for conn, _ in self.peers:
             try:
                 conn.sendall(msg.encode())
             except:
                 pass
 
+    # ------------------- SEND MESSAGE -------------------
+    def send_message(self, event=None):
+        msg = self.entry.get().strip()
+        if not msg:
+            return
+        self.entry.delete(0, tk.END)
+
+        if self.is_host:
+            self.broadcast(f"{self.name}: {msg}")
+        else:
+            try:
+                self.sock.sendall(msg.encode())
+            except:
+                self.safe_log("Failed to send message")
+
+# ------------------- RUN -------------------
 if __name__ == "__main__":
     root = tk.Tk()
-    root.title("P2P LAN Chat")
-    Peer(root)
+    ChatApp(root)
     root.mainloop()
