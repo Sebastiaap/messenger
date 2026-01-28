@@ -12,11 +12,12 @@ RECONNECT_INTERVAL = 3  # seconds
 
 # Your CONTACTS list
 CONTACTS = {
-    "192.168.212.4": "Sebastiaan",
+    "192.168.212.41": "Sebastiaan",
     "192.168.213.177": "Thomas",
     "192.168.212.140": "Tom",
     "192.168.213.131": "Jasper",
-    "192.168.213.13": "Tijmen"
+    "192.168.213.13": "Tijmen",
+    "192.168.212.53": "Rowan"
 }
 
 class ChatApp:
