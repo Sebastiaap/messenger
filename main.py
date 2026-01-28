@@ -22,25 +22,59 @@ CONTACTS = {
 class ChatApp:
     def __init__(self, root):
         self.root = root
-        self.chat = scrolledtext.ScrolledText(root, state="disabled", width=60, height=20)
-        self.chat.pack(padx=10, pady=10)
+        self.root.geometry("900x600")
+        
+        # Main Layout
+        self.paned = tk.PanedWindow(root, orient=tk.HORIZONTAL, sashrelief=tk.RAISED)
+        self.paned.pack(fill=tk.BOTH, expand=True)
 
-        self.entry = tk.Entry(root, width=50)
-        self.entry.pack(side=tk.LEFT, padx=(10, 0), pady=10)
+        # Left Sidebar (Chat List)
+        self.left_frame = tk.Frame(self.paned, width=200)
+        self.paned.add(self.left_frame)
+        
+        self.lbl_chats = tk.Label(self.left_frame, text="Chats", font=("Arial", 12, "bold"))
+        self.lbl_chats.pack(pady=5)
+        
+        self.chat_list = tk.Listbox(self.left_frame, font=("Arial", 10))
+        self.chat_list.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        self.chat_list.bind("<<ListboxSelect>>", self.on_chat_select)
+
+        # Right Side (Conversation)
+        self.right_frame = tk.Frame(self.paned)
+        self.paned.add(self.right_frame)
+
+        self.lbl_current_chat = tk.Label(self.right_frame, text="Global Chat", font=("Arial", 12, "bold"))
+        self.lbl_current_chat.pack(pady=5)
+
+        self.chat_display = scrolledtext.ScrolledText(self.right_frame, state="disabled", width=60, height=20, font=("Arial", 10))
+        self.chat_display.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
+
+        self.input_frame = tk.Frame(self.right_frame)
+        self.input_frame.pack(fill=tk.X, padx=10, pady=10)
+
+        self.entry = tk.Entry(self.input_frame, font=("Arial", 10))
+        self.entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
         self.entry.bind("<Return>", self.send_message)
 
-        tk.Button(root, text="Send", command=self.send_message).pack(side=tk.LEFT, padx=10)
+        self.btn_send = tk.Button(self.input_frame, text="Send", command=self.send_message)
+        self.btn_send.pack(side=tk.LEFT, padx=(10, 0))
 
+        # Network & Data
         self.ip = self.get_local_ip()
         self.name = CONTACTS.get(self.ip, self.ip)
 
-        # Peers: list of dicts: {"conn": socket, "name": str, "ip": str}
         self.peers = []
         self.peers_lock = threading.Lock()
-
-        self.safe_log(f"You are {self.name} ({self.ip})")
+        
+        # Chat History: "Global" -> list of lines, IP -> list of lines
+        self.histories = {"Global": []}
+        self.current_chat_id = "Global" # "Global" or Peer IP
+        
+        self.chat_list.insert(tk.END, "Global Chat")
+        self.chat_list.selection_set(0)
 
         self.update_title()
+        self.safe_log("Global", f"You are {self.name} ({self.ip})")
 
         # Start server (everyone hosts)
         self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -66,20 +100,55 @@ class ChatApp:
             s.close()
 
     def timestamp(self):
-        now = datetime.now()  # Local CET/CEST time (based on system settings)
+        now = datetime.now()
         return now.strftime("[%H:%M:%S]")
 
-    def log(self, msg):
-        self.chat.config(state="normal")
-        self.chat.insert(tk.END, msg + "\n")
-        self.chat.yview(tk.END)
-        self.chat.config(state="disabled")
+    def log(self, chat_id, msg):
+        if chat_id not in self.histories:
+            self.histories[chat_id] = []
+        self.histories[chat_id].append(msg)
+        
+        if self.current_chat_id == chat_id:
+            self.chat_display.config(state="normal")
+            self.chat_display.insert(tk.END, msg + "\n")
+            self.chat_display.yview(tk.END)
+            self.chat_display.config(state="disabled")
 
-    def safe_log(self, msg):
-        self.root.after(0, self.log, msg)
+    def safe_log(self, chat_id, msg):
+        self.root.after(0, self.log, chat_id, msg)
 
     def update_title(self):
         self.root.title(f"P2P Mesh Chat — You: {self.name}")
+
+    def on_chat_select(self, event):
+        selection = self.chat_list.curselection()
+        if not selection:
+            return
+        
+        index = selection[0]
+        label = self.chat_list.get(index)
+        
+        if label == "Global Chat":
+            new_id = "Global"
+        else:
+            # Extract IP from "Name (IP)"
+            try:
+                new_id = label.split("(")[-1].strip(")")
+            except:
+                new_id = "Global"
+
+        self.current_chat_id = new_id
+        self.lbl_current_chat.config(text=label)
+        self.refresh_chat_display()
+
+    def refresh_chat_display(self):
+        self.chat_display.config(state="normal")
+        self.chat_display.delete(1.0, tk.END)
+        lines = self.histories.get(self.current_chat_id, [])
+        for line in lines:
+            self.chat_display.insert(tk.END, line + "\n")
+        self.chat_display.yview(tk.END)
+        self.chat_display.config(state="disabled")
 
     # ------------------- JSON SEND/RECEIVE -------------------
     def send_json(self, conn, obj):
@@ -115,7 +184,8 @@ class ChatApp:
                     return
             self.peers.append({"conn": conn, "name": peer_name, "ip": peer_ip})
 
-        self.safe_log(f"{self.timestamp()} {peer_name} ({peer_ip}) connected")
+        self.root.after(0, lambda: self.chat_list.insert(tk.END, f"{peer_name} ({peer_ip})"))
+        self.safe_log("Global", f"{self.timestamp()} {peer_name} ({peer_ip}) connected")
 
     def remove_peer(self, conn):
         removed_peer = None
@@ -129,7 +199,20 @@ class ChatApp:
             self.peers = new_peers
 
         if removed_peer:
-            self.safe_log(f"{self.timestamp()} {removed_peer['name']} ({removed_peer['ip']}) disconnected")
+            self.safe_log("Global", f"{self.timestamp()} {removed_peer['name']} ({removed_peer['ip']}) disconnected")
+            self.root.after(0, self.remove_peer_from_list, removed_peer['ip'])
+
+    def remove_peer_from_list(self, ip):
+        count = self.chat_list.size()
+        for i in range(count):
+            text = self.chat_list.get(i)
+            if f"({ip})" in text:
+                self.chat_list.delete(i)
+                break
+        if self.current_chat_id == ip:
+            self.current_chat_id = "Global"
+            self.lbl_current_chat.config(text="Global Chat")
+            self.refresh_chat_display()
 
     # ------------------- SERVER SIDE -------------------
     def accept_peers(self):
@@ -138,17 +221,13 @@ class ChatApp:
                 conn, addr = self.server.accept()
                 peer_ip = addr[0]
 
-                # Handshake (JSON, newline-terminated)
                 peer_info = self.recv_json(conn)
                 if not peer_info:
                     conn.close()
                     continue
 
                 self.send_json(conn, {"name": self.name, "ip": self.ip, "version": 1})
-
-                # Remove timeout for long-lived chat usage
                 conn.settimeout(None)
-
                 peer_name = peer_info["name"]
 
                 self.add_peer(conn, peer_name, peer_ip)
@@ -168,7 +247,6 @@ class ChatApp:
                 if ip == self.ip:
                     continue
 
-                # Only connect to peers with a HIGHER IP than ours
                 if self.ip_to_tuple(self.ip) >= self.ip_to_tuple(ip):
                     continue
 
@@ -180,16 +258,13 @@ class ChatApp:
                     sock.settimeout(CONNECTION_TIMEOUT)
                     sock.connect((ip, CHAT_PORT))
 
-                    # Handshake (JSON, newline-terminated)
                     self.send_json(sock, {"name": self.name, "ip": self.ip, "version": 1})
                     peer_info = self.recv_json(sock)
                     if not peer_info:
                         sock.close()
                         continue
 
-                    # Remove timeout after successful handshake
                     sock.settimeout(None)
-
                     peer_name = peer_info["name"]
 
                     self.add_peer(sock, peer_name, ip)
@@ -210,12 +285,37 @@ class ChatApp:
 
     # ------------------- PER-PEER RECEIVE -------------------
     def handle_peer(self, conn, peer_name, peer_ip):
+        buffer = ""
         while True:
             try:
-                msg = conn.recv(1024).decode()
-                if not msg:
+                chunk = conn.recv(1024).decode()
+                if not chunk:
                     break
-                self.safe_log(msg)
+                buffer += chunk
+                
+                while "\n" in buffer:
+                    line, buffer = buffer.split("\n", 1)
+                    if not line.strip():
+                        continue
+                    
+                    try:
+                        data = json.loads(line)
+                    except:
+                        self.safe_log("Global", f"{self.timestamp()} {peer_name}: {line}")
+                        continue
+                        
+                    if data.get("type") == "msg":
+                        text = data.get("text", "")
+                        sender_name = data.get("from_name", peer_name)
+                        ts = data.get("timestamp", self.timestamp())
+                        target = data.get("target", "Global")
+                        
+                        formatted = f"{ts} {sender_name}: {text}"
+                        
+                        if target == "Global":
+                            self.safe_log("Global", formatted)
+                        elif target == self.ip:
+                            self.safe_log(peer_ip, formatted)
             except:
                 break
 
@@ -232,18 +332,37 @@ class ChatApp:
             return
         self.entry.delete(0, tk.END)
 
-        formatted = f"{self.timestamp()} {self.name}: {msg}"
+        timestamp = self.timestamp()
+        formatted_local = f"{timestamp} You: {msg}"
+        self.safe_log(self.current_chat_id, formatted_local)
 
-        self.safe_log(formatted)
-
+        payload = {
+            "type": "msg",
+            "from_name": self.name,
+            "from_ip": self.ip,
+            "text": msg,
+            "timestamp": timestamp,
+            "target": self.current_chat_id
+        }
+        
+        json_str = json.dumps(payload) + "\n"
+        
         with self.peers_lock:
             dead_conns = []
-            for p in self.peers:
-                conn = p["conn"]
-                try:
-                    conn.sendall(formatted.encode())
-                except:
-                    dead_conns.append(conn)
+            if self.current_chat_id == "Global":
+                for p in self.peers:
+                    try:
+                        p["conn"].sendall(json_str.encode())
+                    except:
+                        dead_conns.append(p["conn"])
+            else:
+                for p in self.peers:
+                    if p["ip"] == self.current_chat_id:
+                        try:
+                            p["conn"].sendall(json_str.encode())
+                        except:
+                            dead_conns.append(p["conn"])
+                        break
 
         for conn in dead_conns:
             self.remove_peer(conn)
