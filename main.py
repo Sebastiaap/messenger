@@ -5,12 +5,15 @@ from tkinter import scrolledtext
 import time
 import json
 import base64
+import os
 from datetime import datetime
 
 CHAT_PORT = 5009
 CONNECTION_TIMEOUT = 1.5
 RECONNECT_INTERVAL = 3  # seconds
 ENCRYPTION_KEY = "0a6yekzSSM2Mi4tjiJ2HVsld5jzp1EMhay9t/SYxlws="  # Shared secret key for encryption
+HISTORY_FILE = "chat_history.json"
+MAX_HISTORY_LINES = 100  # Keep only the last 100 messages per chat
 
 # Your CONTACTS list
 CONTACTS = {
@@ -71,6 +74,8 @@ class ChatApp:
         
         # Chat History: "Global" -> list of lines, IP -> list of lines
         self.histories = {"Global": []}
+        self.load_history()
+        
         self.current_chat_id = "Global" # "Global" or Peer IP
         
         self.chat_list.insert(tk.END, "Global Chat")
@@ -110,6 +115,12 @@ class ChatApp:
         if chat_id not in self.histories:
             self.histories[chat_id] = []
         self.histories[chat_id].append(msg)
+        
+        # Trim history if too long
+        if len(self.histories[chat_id]) > MAX_HISTORY_LINES:
+            self.histories[chat_id] = self.histories[chat_id][-MAX_HISTORY_LINES:]
+            
+        self.save_history()
         
         if self.current_chat_id == chat_id:
             self.chat_display.config(state="normal")
@@ -152,6 +163,28 @@ class ChatApp:
             self.chat_display.insert(tk.END, line + "\n")
         self.chat_display.yview(tk.END)
         self.chat_display.config(state="disabled")
+
+    # ------------------- HISTORY MANAGEMENT -------------------
+    def load_history(self):
+        if os.path.exists(HISTORY_FILE):
+            try:
+                with open(HISTORY_FILE, "r") as f:
+                    data = json.load(f)
+                    # Ensure Global exists
+                    if "Global" not in data:
+                        data["Global"] = []
+                    self.histories = data
+            except:
+                self.histories = {"Global": []}
+        else:
+            self.histories = {"Global": []}
+
+    def save_history(self):
+        try:
+            with open(HISTORY_FILE, "w") as f:
+                json.dump(self.histories, f)
+        except:
+            pass
 
     # ------------------- ENCRYPTION -------------------
     def encrypt_data(self, data_str):
