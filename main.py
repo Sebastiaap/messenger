@@ -92,6 +92,9 @@ class ChatApp:
 
         threading.Thread(target=self.accept_peers, daemon=True).start()
         threading.Thread(target=self.connect_to_peers_loop, daemon=True).start()
+        
+        # Initial refresh to show history immediately
+        self.refresh_chat_display()
 
     # ------------------- UTIL -------------------
     def ip_to_tuple(self, ip):
