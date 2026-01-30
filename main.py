@@ -10,7 +10,7 @@ from datetime import datetime
 CHAT_PORT = 5009
 CONNECTION_TIMEOUT = 1.5
 RECONNECT_INTERVAL = 3  # seconds
-ENCRYPTION_KEY = "SecretKey123"  # Shared secret key for encryption
+ENCRYPTION_KEY = "0a6yekzSSM2Mi4tjiJ2HVsld5jzp1EMhay9t/SYxlws="  # Shared secret key for encryption
 
 # Your CONTACTS list
 CONTACTS = {
