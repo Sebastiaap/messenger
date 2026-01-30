@@ -4,11 +4,13 @@ import tkinter as tk
 from tkinter import scrolledtext
 import time
 import json
+import base64
 from datetime import datetime
 
 CHAT_PORT = 5009
 CONNECTION_TIMEOUT = 1.5
 RECONNECT_INTERVAL = 3  # seconds
+ENCRYPTION_KEY = "SecretKey123"  # Shared secret key for encryption
 
 # Your CONTACTS list
 CONTACTS = {
@@ -151,9 +153,32 @@ class ChatApp:
         self.chat_display.yview(tk.END)
         self.chat_display.config(state="disabled")
 
+    # ------------------- ENCRYPTION -------------------
+    def encrypt_data(self, data_str):
+        # Simple XOR encryption on bytes + Base64
+        key_bytes = ENCRYPTION_KEY.encode('utf-8')
+        data_bytes = data_str.encode('utf-8')
+        encrypted = bytearray()
+        for i, b in enumerate(data_bytes):
+            encrypted.append(b ^ key_bytes[i % len(key_bytes)])
+        return base64.b64encode(encrypted).decode('utf-8')
+
+    def decrypt_data(self, data_b64):
+        try:
+            encrypted_bytes = base64.b64decode(data_b64)
+            key_bytes = ENCRYPTION_KEY.encode('utf-8')
+            decrypted = bytearray()
+            for i, b in enumerate(encrypted_bytes):
+                decrypted.append(b ^ key_bytes[i % len(key_bytes)])
+            return decrypted.decode('utf-8')
+        except Exception:
+            return None
+
     # ------------------- JSON SEND/RECEIVE -------------------
     def send_json(self, conn, obj):
-        data = json.dumps(obj) + "\n"
+        json_str = json.dumps(obj)
+        encrypted_str = self.encrypt_data(json_str)
+        data = encrypted_str + "\n"
         conn.sendall(data.encode())
 
     def recv_json(self, conn):
@@ -164,7 +189,12 @@ class ChatApp:
                 return None
             buffer += chunk
         line, _ = buffer.split("\n", 1)
-        return json.loads(line)
+        
+        decrypted_str = self.decrypt_data(line)
+        if not decrypted_str:
+            return None
+            
+        return json.loads(decrypted_str)
 
     # ------------------- PEER MANAGEMENT -------------------
     def is_connected_to_ip(self, ip):
@@ -299,10 +329,14 @@ class ChatApp:
                     if not line.strip():
                         continue
                     
+                    decrypted_line = self.decrypt_data(line)
+                    if not decrypted_line:
+                        # Could not decrypt, maybe garbage or unencrypted?
+                        continue
+
                     try:
-                        data = json.loads(line)
+                        data = json.loads(decrypted_line)
                     except:
-                        self.safe_log("Global", f"{self.timestamp()} {peer_name}: {line}")
                         continue
                         
                     if data.get("type") == "msg":
@@ -346,21 +380,19 @@ class ChatApp:
             "target": self.current_chat_id
         }
         
-        json_str = json.dumps(payload) + "\n"
-        
         with self.peers_lock:
             dead_conns = []
             if self.current_chat_id == "Global":
                 for p in self.peers:
                     try:
-                        p["conn"].sendall(json_str.encode())
+                        self.send_json(p["conn"], payload)
                     except:
                         dead_conns.append(p["conn"])
             else:
                 for p in self.peers:
                     if p["ip"] == self.current_chat_id:
                         try:
-                            p["conn"].sendall(json_str.encode())
+                            self.send_json(p["conn"], payload)
                         except:
                             dead_conns.append(p["conn"])
                         break
